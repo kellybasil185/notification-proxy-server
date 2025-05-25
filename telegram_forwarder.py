@@ -1,12 +1,14 @@
 import logging
 import os
+from dotenv import load_dotenv
 import asyncio
 import aiohttp # For asynchronous HTTP requests
 from telethon import TelegramClient, events
 
 # --- Configuration ---
-API_ID = 28936470  
-API_HASH = '9546c38dced087fe14047f143eabd88f'
+load_dotenv()
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
 DATA_DIR = os.environ.get('DATA_DIR', '.') # On Render, DATA_DIR could be /data
 SESSION_NAME = os.path.join(DATA_DIR, 'my_dashboard_notifier_session') # Session file in data directory
 PROXY_SERVER_WEBHOOK_URL = "http://localhost:3001/webhook/telegram" # Your Node.js proxy

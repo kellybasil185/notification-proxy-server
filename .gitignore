@@ -1,1 +1,8 @@
-./env
+# .gitignore
+node_modules/
+.env
+notifications.sqlite
+*.session
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
