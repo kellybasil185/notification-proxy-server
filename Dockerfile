@@ -12,7 +12,9 @@ RUN apt-get update && \
 # 3. Create a Python virtual environment
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH" # Add venv's bin to the PATH
+
+# Add venv's bin to the PATH
+ENV PATH="$VIRTUAL_ENV/bin:$PATH" 
 
 # 4. Copy package.json and package-lock.json (if available)
 COPY package*.json ./
@@ -24,7 +26,7 @@ RUN npm install --production
 COPY requirements.txt ./
 
 # 7. Install Python dependencies (now using the virtual environment's pip)
-RUN pip install --no-cache-dir -r requirements.txt # No need for pip3 if venv is activated
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 8. Copy the rest of your application code
 COPY . .
