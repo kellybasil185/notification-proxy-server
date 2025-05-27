@@ -9,10 +9,17 @@ from telethon import TelegramClient, events
 load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
-DATA_DIR = os.environ.get('DATA_DIR', '.') # On Render, DATA_DIR could be /data
-SESSION_NAME = os.path.join(DATA_DIR, 'my_dashboard_notifier_session') # Session file in data directory
-PROXY_SERVER_WEBHOOK_URL = "http://localhost:3001/webhook/telegram" # Your Node.js proxy
+
+
+# Railway will mount a volume here
+DATA_DIR = os.environ.get('DATA_DIR', '.')
+SESSION_NAME = os.path.join(DATA_DIR, 'my_dashboard_notifier_session')
+
+# This will be set by Railway as an environment variable
+PROXY_SERVER_WEBHOOK_URL = os.getenv("PROXY_SERVER_WEBHOOK_URL", "http://localhost:3001/webhook/telegram")
+
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+
 TARGET_CHAT_IDS = [
     6840163636,      # Example: Raph (DM with this user)
     -1001452351575,  # Example: SwingTradingLab (Group/Channel)
