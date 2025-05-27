@@ -2,7 +2,7 @@
 node_modules/
 .env
 notifications.sqlite
-*.session
+# *.session
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
