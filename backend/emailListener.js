@@ -4,7 +4,18 @@ const MailListener = require("mail-listener2");
 const { addNotification } = require('./database');
 
 const TRADINGVIEW_SENDER = "noreply@tradingview.com";
-const ALERT_SUBJECT_PREFIX = "Alert:"; // This will now also be used in the server-side search
+const ALERT_SUBJECT_PREFIX = "Alert:";
+
+// --- Reconnection Strategy Variables ---
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10; // Max attempts before a longer pause
+const INITIAL_RECONNECT_DELAY = 5000; // 5 seconds
+const MAX_RECONNECT_DELAY = 60000; // 1 minute
+let currentReconnectDelay = INITIAL_RECONNECT_DELAY;
+let reconnectTimeoutId = null;
+let isReconnecting = false; // Flag to prevent multiple concurrent reconnect attempts
+// --- End Reconnection Strategy Variables ---
+
 
 const mailListener = new MailListener({
   username: process.env.EMAIL_USER,
@@ -12,65 +23,104 @@ const mailListener = new MailListener({
   host: process.env.EMAIL_HOST,
   port: parseInt(process.env.EMAIL_PORT || "993"),
   tls: process.env.EMAIL_TLS === 'true',
-  connTimeout: 10000,
-  authTimeout: 5000,
-  debug: console.log, // Keep this for debugging the new search filter
-  tlsOptions: { rejectUnauthorized: false },
+  connTimeout: 15000, // Slightly increased connection timeout
+  authTimeout: 7000,  // Slightly increased auth timeout
+  debug: console.log,
+  tlsOptions: { rejectUnauthorized: false }, // Be cautious with this in production for public email providers
   mailbox: "INBOX",
-  // --- MODIFIED searchFilter ---
   searchFilter: [
-    "UNSEEN",                         // Still only look for unread emails
-    ["FROM", TRADINGVIEW_SENDER],     // Only emails FROM TradingView
-    ["SUBJECT", ALERT_SUBJECT_PREFIX] // Only emails where the subject CONTAINS "Alert:"
-                                      // Note: IMAP SUBJECT search is typically a substring search.
-                                      // Your JS filter `subject.startsWith(ALERT_SUBJECT_PREFIX)`
-                                      // will provide the exact "starts with" check.
+    "UNSEEN",
+    ["FROM", TRADINGVIEW_SENDER],
+    ["SUBJECT", ALERT_SUBJECT_PREFIX]
   ],
-  // --- End of MODIFIED searchFilter ---
   markSeen: true,
   fetchUnreadOnStart: true,
   mailParserOptions: { streamAttachments: false },
   attachments: false,
 });
 
-// The rest of your emailListener.js (startEmailListener function, event handlers)
-// can remain largely the same. Your JavaScript filtering inside the mailListener.on("mail", ...)
-// event is still a good final check.
+function attemptReconnect() {
+  if (isReconnecting) {
+    console.log("Email listener: Reconnection already in progress.");
+    return;
+  }
+  isReconnecting = true;
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    console.error(`Email listener: Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Will try again after a longer delay or manual restart.`);
+    // Optionally, you could set a much longer timeout here, or stop trying until a manual restart.
+    // For now, let's reset attempts and use max delay to keep trying indefinitely but less frequently.
+    currentReconnectDelay = MAX_RECONNECT_DELAY; // Keep trying at max delay
+  } else {
+    reconnectAttempts++;
+    // Exponential backoff for delay
+    currentReconnectDelay = Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts -1), MAX_RECONNECT_DELAY);
+  }
+
+  console.log(`Email listener: Attempting to reconnect in ${currentReconnectDelay / 1000}s (Attempt ${reconnectAttempts})`);
+
+  if (reconnectTimeoutId) clearTimeout(reconnectTimeoutId); // Clear any existing timeout
+
+  reconnectTimeoutId = setTimeout(() => {
+    console.log("Email listener: Executing reconnect attempt...");
+    try {
+      // It's important to ensure that mailListener itself is in a state where start() can be called.
+      // If mailListener internally manages its state correctly, this should be okay.
+      // Some libraries might require creating a new instance if the old one is permanently closed.
+      // For mail-listener2, start() should attempt to re-establish.
+      mailListener.start();
+    } catch (e) {
+      console.error("Email listener: Error during reconnect attempt:", e);
+      // The 'error' event on mailListener should also catch this, but good to log here too.
+    } finally {
+      isReconnecting = false; // Allow new attempts after this one
+    }
+  }, currentReconnectDelay);
+}
 
 function startEmailListener() {
   mailListener.start();
 
   mailListener.on("server:connected", function(){
-    console.log("Email listener connected to IMAP server (with updated filter).");
+    console.log("Email listener connected to IMAP server.");
+    reconnectAttempts = 0; // Reset attempts on successful connection
+    currentReconnectDelay = INITIAL_RECONNECT_DELAY; // Reset delay
+    isReconnecting = false;
+    if (reconnectTimeoutId) {
+      clearTimeout(reconnectTimeoutId);
+      reconnectTimeoutId = null;
+    }
   });
 
-  mailListener.on("server:disconnected", function(){
-    console.log("Email listener disconnected from IMAP server. Attempting to reconnect...");
-    // Consider a more robust reconnect strategy if needed
-    // setTimeout(() => { try { mailListener.start(); } catch(e){ console.error(e); } }, 30000);
+  mailListener.on("server:disconnected", function(err){ // err object might be passed by the library
+    console.warn("Email listener disconnected from IMAP server.", err || "* BYE or other reason");
+    isReconnecting = false; // Allow a new reconnect attempt to be scheduled
+    attemptReconnect();
   });
 
   mailListener.on("error", function(err){
     console.error("Email listener error:", err);
+    // You might want to trigger a reconnect attempt here too,
+    // depending on whether "server:disconnected" always follows an error that causes disconnection.
+    // Avoid calling attemptReconnect() if isReconnecting is true to prevent loops on some errors.
+    if (!isReconnecting && (err.code === 'ECONNRESET' || err.message.includes('ETIMEDOUT') || err.message.includes('ENOTFOUND'))) {
+       console.log("Email listener: Attempting reconnect due to connection error.");
+       isReconnecting = false; // Reset before calling attemptReconnect if it's a new disconnection sequence
+       attemptReconnect();
+    }
   });
 
   mailListener.on("mail", function(mail, seqno, attributes){
-    // This 'mail' event should now only fire for emails that (mostly) match the new server-side filter
     console.log("Email processed by mail event (candidate):", mail.subject);
-
     const senderEmail = mail.from && mail.from[0] && mail.from[0].address;
     const subject = mail.subject;
 
-    // This JavaScript filter is still a good final validation
-    if (senderEmail && senderEmail.toLowerCase().includes(TRADINGVIEW_SENDER.toLowerCase()) && 
+    if (senderEmail && senderEmail.toLowerCase().includes(TRADINGVIEW_SENDER.toLowerCase()) &&
         subject && subject.startsWith(ALERT_SUBJECT_PREFIX)) {
       console.log("TradingView alert email confirmed by JS filter.");
-      
       const notificationContent = subject.substring(ALERT_SUBJECT_PREFIX.length).trim();
-
       if (notificationContent) {
-        console.log("Extracted TradingView alert content:", notificationContent);
-        addNotification('TradingView', notificationContent, (err, id) => {
+        addNotification('TradingView', notificationContent, (err, id) => { // Assuming type is handled or defaulted in addNotification
           if (err) {
             console.error('Failed to save TradingView notification from email:', err);
           } else {
@@ -80,9 +130,6 @@ function startEmailListener() {
       } else {
         console.warn("Could not extract content from TradingView alert email subject:", subject);
       }
-    } else {
-      // This block should be hit less frequently now
-      // console.log("Email (after server filter) did not pass final JS filter. Subject:", subject, "From:", senderEmail);
     }
   });
 }
